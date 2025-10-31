@@ -72,6 +72,21 @@ The visualization utility generates a multi-plot figure comparing:
 * The fast **ABCD Model** response against the **Ideal Target**.
 * The final **ABCD Model** response against the **HFSS Simulation** response.
 
+
+
+## 📊 Recommended Parameters for Optimization
+To ensure a balance between convergence speed and finding a high-quality solution, we recommend starting with the following parameters for the Genetic Algorithm (GA), which you can set in the Optimization Settings tab of the GUI.
+
+These values are configured for the structure size (18×200 cells) and the complexity of the design space.
+
+| Parameter | Recommended Value | Why this value? |
+| :--- | :--- | :--- |
+| **Generations** | 120 | Provides sufficient iterations for the population to converge on a good solution using the fast ABCD model. |
+| **Population Size** | 100 | A reasonable population size given the number of possible columns (~500). This promotes diversity. |
+| **Parents Mating** | 10 | The number of best solutions (parents) used to generate the next generation. |
+| **Elitism** | 10 | Ensures the top 10 best solutions are carried directly to the next generation, preventing loss of the best found fitness. |
+| **Mutation Probability** | 0.1 | A 10% chance for genes to mutate, ensuring the algorithm can escape local optima. |
+
 ## 🙏 Acknowledgements
 
 This project was conducted at the **THz Lab** under the supervision of **Dr. Levi Smith and Prof. Thomas Darcie**.
