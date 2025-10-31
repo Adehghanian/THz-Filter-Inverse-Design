@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.exe
+
+# IDE/Editor specific files
+.vscode/
+.idea/
+
+# PyAEDT / HFSS generated files
+*.aedt*
+*.log
+*.err
+*.csv
+*temp*
+
+# User-specific configuration and virtual environment
+config.pyc
+# If you use a virtual environment, add its folder name (e.g., "venv" or "env")
+venv/
+env/
