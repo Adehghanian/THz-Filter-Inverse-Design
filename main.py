@@ -270,7 +270,7 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
         }
 
         hfss_data = {
-            "HFSS_Freq_THz": freq_hfss / 1e12,
+            "HFSS_Freq_THz": freq_hfss / 1e3,
             "HFSS_S11_dB": hfss_S11_dB,
             "HFSS_S21_dB": hfss_S21_dB
         }
