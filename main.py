@@ -14,7 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import ansys.aedt.core
 import config
-from utils import setup_logger
+import logging
 from fitness_functions import fitness_func, on_generation
 from thz_filter_model import calculate_S_W_values, calculate_Z1, calculate_S21_dB, ideal_filter
 from visualization import visualize_grid, save_s_parameters_to_csv, plot_s_parameters_from_csv
@@ -28,7 +28,17 @@ if __name__ == "__main__":
     # Use 'spawn' on Windows for COM safety
     mp.set_start_method("spawn", force=True)
 
-
+def setup_logger(name="console_logger", level=logging.DEBUG):
+    """Configure and return a formatted console logger."""
+    logger = logging.getLogger(name)
+    if not logger.hasHandlers():
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        formatter = logging.Formatter("%(message)s")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    logger.setLevel(level)
+    return logger
 
 # Optimization runner
 # ---------------------------------------------------------------------------
@@ -270,7 +280,7 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
         }
 
         hfss_data = {
-            "HFSS_Freq_THz": freq_hfss / 1e3,
+            "HFSS_Freq_THz": freq_hfss /1000,
             "HFSS_S11_dB": hfss_S11_dB,
             "HFSS_S21_dB": hfss_S21_dB
         }
