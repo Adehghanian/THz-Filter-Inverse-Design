@@ -33,18 +33,20 @@ def check_phase_linearity(S21_complex, freqs):
 # GA Fitness Function
 # ---------------------------------------------------------------------------
 def fitness_func(ga_instance, solution, solution_idx):
+    import importlib, config
+    importlib.reload(config)
     """Fitness function for the Genetic Algorithm."""
     try:
         valid_columns = generate_valid_columns()
         grid = np.column_stack([valid_columns[int(g)] for g in solution])
         S, W = calculate_S_W_values(grid)
         Z1 = calculate_Z1(S, W)
-        S21_dB, _, _, _, S21_complex = calculate_S21_dB(Z1)
+        S21_dB, _, _, _, S21_complex = calculate_S21_dB(Z1, config.FREQS)
         ideal_S21, _, _, _ = ideal_filter(**ga_instance.filter_params)
 
 
         magnitude_rmse = calculate_rmse(S21_dB, ideal_S21)
-        phase_rmse = check_phase_linearity(S21_complex, FREQS)
+        phase_rmse = check_phase_linearity(S21_complex, config.FREQS)
         fitness = - (magnitude_rmse + phase_rmse)
 
         if not np.isfinite(fitness):
