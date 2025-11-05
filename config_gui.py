@@ -8,19 +8,26 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
-
+import pickle
+import tempfile 
+import traceback
 import config
 from config import FREQS
 from thz_filter_model import ideal_filter
-from visualization import visualize_grid
+from visualization import visualize_grid, save_s_parameters_to_csv, plot_s_parameters
 from main import run_optimization, run_hfss_simulation
+import pandas as pd
+# --- TEMP FILE PATH FOR INTER-PROCESS DATA TRANSFER ---
+TEMP_DATA_FILE = os.path.join(tempfile.gettempdir(), "thz_hfss_results_temp.pkl") 
+
 
 # ---------------------------------------------------------------------------
 # Helper: Save updated values to config.py
 # ---------------------------------------------------------------------------
 import importlib
 
-def update_config_file(new_values):
+def update_config_file(new_values, console_writer=None):
+# ... (function remains the same) ...
     """Overwrite config.py constants with updated GUI values and reload the module."""
     config_path = os.path.join(os.path.dirname(__file__), "config.py")
 
@@ -45,7 +52,9 @@ def update_config_file(new_values):
     import config
     importlib.reload(config)
 
-    messagebox.showinfo("Success", "Configuration saved and reloaded successfully!")
+    # 💬 Send message to the GUI console
+    if console_writer:
+        console_writer("Configuration saved and reloaded successfully!\n")
 
 
 
@@ -89,9 +98,15 @@ def launch_config_gui():
     hfss_save_path = tk.StringVar(value=config.HFSS_SAVE_PATH)
 
     def browse_hfss_path():
+        # NOTE: askdirectory returns a path without the file name. The original code
+        # appended the filename. I'll preserve this pattern.
         path = filedialog.askdirectory(title="Select HFSS Save Directory")
         if path:
-            hfss_save_path.set(os.path.join(path, os.path.basename(config.HFSS_SAVE_PATH)))
+            # Reconstruct the full path including the project name from config
+            current_project_name = os.path.basename(hfss_save_path.get()) 
+            if not current_project_name.endswith('.aedt'): # fallback for when a file is not yet defined
+                current_project_name = config.HFSS_PROJECT_NAME 
+            hfss_save_path.set(os.path.join(path, current_project_name))
 
     ttk.Entry(hfss_tab, textvariable=hfss_save_path, width=50).grid(row=3, column=1, sticky="w")
     ttk.Button(hfss_tab, text="Browse", command=browse_hfss_path).grid(row=3, column=2, padx=5, sticky="w")
@@ -403,21 +418,71 @@ def launch_config_gui():
     # ===== RESULTS TAB =====
     results_tab = ttk.Frame(notebook)
     notebook.add(results_tab, text="Results")
+    
+    # --- Results Button Frame (Top of Results tab) ---
+    results_btn_frame = ttk.Frame(results_tab)
+    results_btn_frame.pack(fill="x", padx=10, pady=(5, 0))
+    
+    # NEW: Data storage for the currently plotted results (for saving)
+    root.plotted_calc_data = None
+    root.plotted_hfss_data = None
+    
+    def save_plotted_data_to_csv():
+        if root.plotted_calc_data is None:
+            messagebox.showwarning("No Data", "No results data is currently loaded to save.")
+            return
+
+        # Use filedialog to ask for save location (directory)
+        save_dir = filedialog.askdirectory(title="Select Directory to Save S-Parameters")
+        if not save_dir:
+            return
+
+        try:
+            # Call the function to save the data
+            save_s_parameters_to_csv(
+                base_filename="S_parameters_advanced",
+                calculated_data=root.plotted_calc_data,
+                hfss_data=root.plotted_hfss_data,
+                save_dir=save_dir,
+                save_flag=True # Explicitly save
+            )
+            messagebox.showinfo("Success", f"S-parameters successfully saved to:\n{save_dir}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save data: {e}")
+
+    # NEW: Save CSV Button
+    save_csv_btn = ttk.Button(
+        results_btn_frame, 
+        text="💾 Save Plotted Data to CSV",
+        command=save_plotted_data_to_csv,
+        state="disabled"
+    )
+    save_csv_btn.pack(side="left", padx=5)
+
+    ttk.Label(results_btn_frame, text="Optimized Structure Visualization").pack(side="right", padx=10, pady=5)
+    
+    # --- Results Plot Frame (Bottom of Results tab) ---
     results_plot_frame = ttk.Frame(results_tab)
     results_plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-    ttk.Label(results_tab, text="Optimized Structure Visualization").pack(anchor="w", padx=10, pady=5)
-
-    def show_results_figure(fig):
+    def show_results_figure(fig, calc_data=None, hfss_data=None):
         """Embed a matplotlib figure into the Results tab."""
         # Clear old figure
         for widget in results_plot_frame.winfo_children():
             widget.destroy()
         if fig is None:
+            save_csv_btn.configure(state="disabled")
             return
+            
+        # Store data for the Save CSV button
+        root.plotted_calc_data = calc_data
+        root.plotted_hfss_data = hfss_data
+        save_csv_btn.configure(state="normal")
+        
         canvas = FigureCanvasTkAgg(fig, master=results_plot_frame)
         canvas.get_tk_widget().pack(fill="both", expand=True)
         canvas.draw()
+        
     # -------------------------------------------------------------------
     # Helper functions (now safely in scope)
     # -------------------------------------------------------------------
@@ -442,13 +507,14 @@ def launch_config_gui():
 
     # Store optimized grid so HFSS button can use it
     root.best_grid = None
+    root.pre_hfss_calc_data = None # Store pre-HFSS (ABCD) data
 
     def run_selected_optimization():
         selected_method = opt_method.get()
         write_to_console(f"\nRunning {selected_method}...\n")
 
-        # 🔥 NEW: automatically save the current GUI values before running
-        save_config()  # <---- add this line here
+
+        save_config()  
         # clear old convergence
         fitness_values.clear()
         ax_conv.clear()
@@ -473,115 +539,158 @@ def launch_config_gui():
 
 
         def worker():
-            best_grid, fitness_history = run_optimization(
-                selected_method=selected_method,
-                update_callback=update_plot_safe,   # ✅ use the defined function
-                console_callback=write_to_console,  # ✅ use your GUI console writer
-                filter_params=filter_params
-            )
+            try:
+                best_grid, fitness_history = run_optimization(
+                    selected_method=selected_method,
+                    update_callback=update_plot_safe,   # ✅ use the defined function
+                    console_callback=write_to_console,  # ✅ use your GUI console writer
+                    filter_params=filter_params
+                )
 
-            write_to_console("\nOptimization finished successfully.\n")
-            root.best_grid = best_grid
-            run_hfss_btn.configure(state="normal")
-            write_to_console("\nYou can now run the HFSS simulation.\n")
-            # --- 🔥 NEW: Save ABCD + Ideal results to CSV BEFORE HFSS ---
-            import importlib, config
-            importlib.reload(config)
-            from thz_filter_model import (
-                calculate_S_W_values, calculate_Z1, calculate_S21_dB, ideal_filter
-            )
-            from visualization import save_s_parameters_to_csv, plot_s_parameters_from_csv
+                write_to_console("\nOptimization finished successfully.\n")
+                root.best_grid = best_grid
+                run_hfss_btn.configure(state="normal")
+                write_to_console("\nYou can now run the HFSS simulation.\n")
+                
 
-            S, W = calculate_S_W_values(best_grid)
-            Z1 = calculate_Z1(S, W)
-            S21_dB_calc, S11_dB_calc, S21_phase_calc, S11_phase_calc, _ = calculate_S21_dB(Z1)
+                import importlib, config
+                importlib.reload(config)
+                from thz_filter_model import (
+                    calculate_S_W_values, calculate_Z1, calculate_S21_dB, ideal_filter
+                )
+                
+                S, W = calculate_S_W_values(best_grid)
+                Z1 = calculate_Z1(S, W)
+                S21_dB_calc, S11_dB_calc, S21_phase_calc, S11_phase_calc, _ = calculate_S21_dB(Z1, config.FREQS)
 
-            freqs = config.FREQS
-            ideal_S21, ideal_S11, ideal_S21_phase, ideal_S11_phase = ideal_filter(
-                filter_type=filter_params["filter_type"],
-                center_frequency=filter_params["center_frequency"],
-                bandwidth=filter_params["bandwidth"],
-                transition_bw=filter_params["transition_bw"],
-                depth_dB=filter_params["depth_dB"],
-                freqs=freqs
-            )
+                freqs = config.FREQS
 
-            calculated_data = {
-                "Freq_THz": freqs / 1e12,
-                "Calc_S11_dB": S11_dB_calc,
-                "Calc_S21_dB": S21_dB_calc,
-                "Calc_S11_phase_deg": S11_phase_calc,
-                "Calc_S21_phase_deg": S21_phase_calc,
-                "Ideal_S11_dB": ideal_S11,
-                "Ideal_S21_dB": ideal_S21
-            }
+                ideal_S21, ideal_S11, ideal_S21_phase, ideal_S11_phase = ideal_filter(
+                    filter_type=filter_params["filter_type"],
+                    center_frequency=filter_params["center_frequency"],
+                    bandwidth=filter_params["bandwidth"],
+                    transition_bw=filter_params["transition_bw"],
+                    depth_dB=filter_params["depth_dB"],
+                    freqs=freqs
+                )
 
-            save_s_parameters_to_csv(
-                base_filename="S_parameters_advanced",
-                calculated_data=calculated_data,
-                save_dir=config.HFSS_EXPORT_DIR
-            )
-            write_to_console("✅ Pre-HFSS S-parameters saved to CSV.\n")
-            import importlib, visualization
-            importlib.reload(visualization)
-            fig_pre = visualization.plot_s_parameters_from_csv("S_parameters_advanced", best_grid=root.best_grid)
+                calculated_data = {
+                    "Freq_THz": freqs / 1e12,
+                    "Calc_S11_dB": S11_dB_calc,
+                    "Calc_S21_dB": S21_dB_calc,
+                    "Calc_S11_phase_deg": S11_phase_calc,
+                    "Calc_S21_phase_deg": S21_phase_calc,
+                    "Ideal_S11_dB": ideal_S11,
+                    "Ideal_S21_dB": ideal_S21
+                }
 
-            root.after(0, lambda: show_results_figure(fig_pre))
+                root.pre_hfss_calc_data = calculated_data # Store the data in the root object
+                
+                # No CSV saving here. Plot directly from data dict.
+                fig_pre = plot_s_parameters(
+                    base_filename=f"{selected_method} Result (ABCD Model)", 
+                    calculated_data_dict=calculated_data
+                )
+
+                root.after(0, lambda: show_results_figure(fig_pre, calc_data=calculated_data))
+                
+            except Exception as e:
+                write_to_console(f"\nOptimization failed: {e}\n{traceback.format_exc()}\n")
 
 
         threading.Thread(target=worker, daemon=True).start()
 
 
+    # --- TEMP FILE PATH FOR INTER-PROCESS DATA TRANSFER ---
+    TEMP_DATA_FILE = os.path.join(tempfile.gettempdir(), "thz_hfss_results_temp.pkl") 
+
+    # ... (Previous code) ...
+
+    # Store optimized grid so HFSS button can use it
+    root.best_grid = None
+    root.pre_hfss_calc_data = None # Store pre-HFSS (ABCD) data
+
+    # ... (run_selected_optimization function) ...
+
     def run_hfss_after_gui():
         if root.best_grid is None or root.best_grid.size == 0:
             messagebox.showwarning("No optimized grid", "Please run optimization first.")
             return
-
-        if not messagebox.askyesno(
-            "Confirm HFSS Run",
-            "This will close the GUI and open HFSS simulation.\nDo you want to continue?"
-        ):
-            return
+        
+        # Disable the button to prevent multiple simultaneous runs
+        run_hfss_btn.configure(state="disabled")
 
         best_grid = root.best_grid
-
+        # pre_hfss_calc_data is not strictly needed here as the thread gets the new calc_data
+        
         def hfss_runner():
+            calc_data = None
+            hfss_data = None
             try:
                 write_to_console("⚙️ HFSS simulation started...\n")
-                run_hfss_simulation(best_grid)
+
+                calc_data, hfss_data = run_hfss_simulation(best_grid, console_callback=write_to_console)
                 write_to_console("✅ HFSS simulation completed successfully.\n")
+                
+                # 🚨 CHANGE 2: Pass data to a GUI-safe plotting function instead of pickling/destroying GUI
+                root.after(0, lambda: load_and_display_hfss_results(calc_data, hfss_data, best_grid))
+
             except Exception as e:
-                write_to_console(f"❌ HFSS simulation failed: {e}\n")
+                # Log error
+                write_to_console(f"❌ HFSS simulation failed: {e}\n{traceback.format_exc()}\n")
+            
             finally:
-                # reopen result viewer *after* HFSS finishes
-                subprocess.Popen(
-                    [sys.executable, os.path.abspath(sys.argv[0]), "--gui_results"],
-                    creationflags=subprocess.CREATE_NEW_CONSOLE
-                )
-
-
+                # 🚨 CHANGE 3: Remove the root.after(100, root.destroy) and cleanup flags
+                write_to_console("HFSS runner thread finished.\n")
+                root.after(0, lambda: run_hfss_btn.configure(state="normal")) # Re-enable button after thread finishes
 
         # 🔹 make it non-daemon, so it survives after GUI close
         t = threading.Thread(target=hfss_runner)
         t.start()
+        
+    def load_and_display_hfss_results(calc_data, hfss_data, best_grid):
+        """Thread-safe function to display final HFSS results in the GUI."""
+        try:
+            notebook.select(results_tab)                    # jump to Results tab
+            write_to_console("\nLoading HFSS results...\n")
 
-        # 🔹 give HFSS thread time to start before closing GUI
-        root.after(2000, root.destroy)
+            if calc_data is not None:
+                # Plot the data
+                calc_df = pd.DataFrame(calc_data)
+                # Print the first few rows for quick inspection
+                write_to_console(calc_df.head().to_string() + '\n') 
+                
+                if hfss_data:
+                    write_to_console("\n--- HFSS Simulation Data Head ---\n")
+                    hfss_df = pd.DataFrame(hfss_data)
+                    write_to_console(hfss_df.head().to_string() + '\n')
+                    
+                fig = plot_s_parameters(
+                    base_filename="HFSS + ABCD Results",
+                    calculated_data_dict=calc_data,
+                    hfss_data_dict=hfss_data
+                )
+                show_results_figure(fig, calc_data=calc_data, hfss_data=hfss_data)
+                
+                # Visualize the grid
+                if best_grid is not None:
+                    pass # We will avoid calling plt.show() in the GUI thread directly.
+                    
+                write_to_console("✅ HFSS + ABCD Results loaded and displayed.\n")
+            else:
+                write_to_console("❌ Could not load results: HFSS run failed to return valid data.\n")
+
+        except Exception as e:
+            write_to_console(f"❌ Could not load results: {e}\n{traceback.format_exc()}\n")
 
 
 
 
-
-
-
-
-    # -------------------------------------------------------------------
-    # Buttons (one clean block)
-    # -------------------------------------------------------------------
     button_frame = ttk.Frame(root)
     button_frame.pack(fill="x", pady=10)
 
     def save_config():
+# ... (function body remains the same) ...
         new_values = {
             "HFSS_VERSION": f'"{hfss_version.get()}"',
             "HFSS_NON_GRAPHICAL": hfss_headless.get(),
@@ -615,8 +724,7 @@ def launch_config_gui():
             "ADJ_LEARNING_RATE": f"{adj_lr.get()}",
             "ADJ_ITERATIONS": f"{adj_iterations.get()}",
         }
-        update_config_file(new_values)
-
+        update_config_file(new_values, console_writer=write_to_console)
     ttk.Button(button_frame, text="💾 Save Configuration",
                 command=save_config).pack(side="left", padx=20)
 
@@ -627,51 +735,10 @@ def launch_config_gui():
                                 command=run_hfss_after_gui, state="disabled")
     run_hfss_btn.pack(side="right", padx=10)
 
-    
-    
-    
-        # ----------------------------------------------------------------------
-    # Auto-load results if GUI reopened after HFSS run
-    # ----------------------------------------------------------------------
-
-    from visualization import plot_s_parameters_from_csv
-
-    if "--show_results" in sys.argv:
-        csv_path = os.path.join(config.HFSS_EXPORT_DIR, "S_parameters_advanced.csv")
-        if os.path.exists(csv_path):
-            write_to_console("\nDetected completed HFSS run. Loading results...\n")
-            try:
-                plot_s_parameters_from_csv("S_parameters_advanced")
-                visualize_grid(None)  # visualize last grid
-                write_to_console("Results loaded successfully.\n")
-            except Exception as e:
-                write_to_console(f"Error loading results: {e}\n")
-        else:
-            write_to_console("No results file found to display.\n")
-
-
-
-
-
-    # ----------------------------------------------------------------------
-    # Auto-open Results tab if launched with flag
-    # ----------------------------------------------------------------------
-    if "--gui_results" in sys.argv:
-        try:
-            notebook.select(results_tab)                    # jump to Results tab
-            write_to_console("\nLoading HFSS results...\n")
-            from visualization import plot_s_parameters_from_csv
-            fig = plot_s_parameters_from_csv("S_parameters_advanced")
-            show_results_figure(fig)
-            write_to_console("✅ Results loaded and displayed.\n")
-        except Exception as e:
-            write_to_console(f"❌ Could not load results: {e}\n")
 
     root.mainloop()
 
 
 if __name__ == "__main__":
-    if "--gui_results" in sys.argv:
-        launch_config_gui()             # reuse same GUI logic
-    else:
-        launch_config_gui()             # normal start
+
+    launch_config_gui()             # reuse same GUI logic (results viewer)
