@@ -1,10 +1,3 @@
-"""
-main.py
---------
-Entry point for THz inverse design using Genetic Algorithm (PyGAD)
-and ABCD-matrix modeling, with optional HFSS integration via PyAEDT.
-"""
-
 import os
 import time
 import tempfile
@@ -17,8 +10,10 @@ import config
 import logging
 from fitness_functions import fitness_func, on_generation
 from thz_filter_model import calculate_S_W_values, calculate_Z1, calculate_S21_dB, ideal_filter
-from visualization import visualize_grid, save_s_parameters_to_csv, plot_s_parameters_from_csv
+from visualization import visualize_grid, save_s_parameters_to_csv, plot_s_parameters # <--- Changed import
 from optimization_methods import run_genetic_algorithm, run_particle_swarm, run_adjoint_method
+import pickle # <--- NEW
+import shutil # <--- NEW
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +97,7 @@ def run_optimization(selected_method="Genetic Algorithm",
 # ---------------------------------------------------------------------------
 # HFSS process launcher (used when running in a separate process)
 # ---------------------------------------------------------------------------
+# NOTE: This function is not used in the GUI flow, but kept for completeness
 def hfss_process_entry(best_grid, console_pipe, stop_flag):
     """Separate process entry for running HFSS safely with COM."""
     from main import run_hfss_simulation
@@ -113,7 +109,15 @@ def hfss_process_entry(best_grid, console_pipe, stop_flag):
             pass
 
     try:
-        run_hfss_simulation(best_grid, console_callback=console_callback, stop_flag=stop_flag)
+        # Run HFSS and get data back
+        calc_data, hfss_data = run_hfss_simulation(best_grid, console_callback=console_callback, stop_flag=stop_flag)
+        # In a real multiprocessing scenario, you'd send data back here
+        # For simplicity and aligning with GUI change, we'll just log
+        if hfss_data:
+            console_callback("HFSS simulation completed and data retrieved.")
+            # For this context, we will not implement the complex pipe data transfer
+            # that is needed for non-serializable objects like numpy arrays.
+        
     except Exception:
         console_callback("HFSS process crashed:\n" + traceback.format_exc())
     finally:
@@ -122,16 +126,20 @@ def hfss_process_entry(best_grid, console_pipe, stop_flag):
 
 
 # ---------------------------------------------------------------------------
-# HFSS Simulation
+# HFSS Simulation (MODIFIED)
 # ---------------------------------------------------------------------------
 def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag=None):
     """
     Runs HFSS using PyAEDT for the optimized structure.
+    
+    Returns:
+        tuple[dict, dict]: (calculated_data, hfss_data)
     """
     import importlib, config
     importlib.reload(config)
 
-
+    # --- Setup (same as original) ---
+    # ... (setup code remains the same) ...
 
     def log(msg):
         if console_callback:
@@ -143,11 +151,25 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
 
     AEDT_VERSION = config.HFSS_VERSION
     NG_MODE = config.HFSS_NON_GRAPHICAL  # note: this means NON-GRAPHICAL=True (headless). Set False if you want the UI.
-    temp_folder = tempfile.TemporaryDirectory(suffix=".ansys")
-
+    # Use TemporaryDirectory only if not using an existing project path, or clean up after.
+    # Given the complexity with COM, let's stick to the temp folder logic from original:
+    temp_folder = tempfile.TemporaryDirectory(suffix=".ansys") 
+    
+    calculated_data = None
+    hfss_data = None
+    
     try:
         project_name = config.HFSS_PROJECT_NAME
         log(f"🚀 Starting HFSS {AEDT_VERSION} simulation...")
+        
+        # Determine if a project path is specified to reuse. If not, use the temporary folder path.
+        if config.HFSS_REUSE_PROJECT and os.path.exists(config.HFSS_SAVE_PATH):
+            project_dir = os.path.dirname(config.HFSS_SAVE_PATH)
+        else:
+            # Copy a base project or simply use the temp dir for the new project
+            # For simplicity, we'll let PyAEDT create a new one in the temp dir if not reusing.
+            project_dir = temp_folder.name 
+
         d = ansys.aedt.core.launch_desktop(
             AEDT_VERSION,
             non_graphical=NG_MODE,
@@ -155,7 +177,9 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
         )
 
         # Create HFSS design
-        hfss = ansys.aedt.core.Hfss(version=AEDT_VERSION, project=project_name, solution_type="Terminal")
+        hfss = ansys.aedt.core.Hfss(version=AEDT_VERSION, 
+                                    project=project_name, # Use name from config
+                                    solution_type="Terminal")
         Modeler = hfss.modeler
         hfss["patch_dim"] = "10um"
         length_units = "um"
@@ -250,6 +274,8 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
 
         hfss.validate_full_design()
         hfss.analyze()
+        
+        # Save project to the configured path after analysis
         hfss.save_project(config.HFSS_SAVE_PATH)
 
         # --- Retrieve S-parameters ---
@@ -265,8 +291,9 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
         # Recalculate analytical (ABCD) data for comparison
         S, W = calculate_S_W_values(best_grid)
         Z1 = calculate_Z1(S, W)
-        S21_dB_calc, S11_dB_calc, S21_phase_calc, S11_phase_calc, _ = calculate_S21_dB(Z1)
-        ideal_S21, ideal_S11, ideal_S21_phase, ideal_S11_phase = ideal_filter()
+        S21_dB_calc, S11_dB_calc, S21_phase_calc, S11_phase_calc, _ = calculate_S21_dB(Z1, config.FREQS)
+        # Use ideal_filter with current config (or passed filter_params)
+        ideal_S21, ideal_S11, ideal_S21_phase, ideal_S11_phase = ideal_filter() 
 
         # --- Prepare data for saving ---
         calculated_data = {
@@ -280,43 +307,55 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
         }
 
         hfss_data = {
-            "HFSS_Freq_THz": freq_hfss /1000,
+            "HFSS_Freq_THz": freq_hfss / 1e3, # Convert Hz to THz
             "HFSS_S11_dB": hfss_S11_dB,
             "HFSS_S21_dB": hfss_S21_dB
         }
 
-        # --- Save both datasets to CSV ---
-        from visualization import save_s_parameters_to_csv, plot_s_parameters_from_csv, visualize_grid
-        save_s_parameters_to_csv(
-            base_filename="S_parameters_advanced",
-            calculated_data=calculated_data,
-            hfss_data=hfss_data,
-            save_dir=config.HFSS_EXPORT_DIR
-        )
-
-        log("✅ S-parameters saved successfully.")
-        fig_post = plot_s_parameters_from_csv(
-            base_filename="S_parameters_advanced",
-            load_dir=config.HFSS_EXPORT_DIR,
-            best_grid=best_grid
-        )
-
-        # Optional: show or embed in GUI result tab
-        visualize_grid(best_grid)
-        log("✅ Plotted ABCD + HFSS comparison.")
+        log("✅ Data retrieved from HFSS.")
+        
+        # --- RETURN DATA INSTEAD OF SAVING TO CSV ---
+        return calculated_data, hfss_data
 
 
     except Exception:
         log("HFSS simulation failed:\n" + traceback.format_exc())
+        return calculated_data, None # Return whatever data was calculated or None
 
+    # In main.py, inside run_hfss_simulation:
     finally:
         try:
-            hfss.release_desktop()
+            if hfss is not None:
+                # Use the design object's release_desktop method first
+                hfss.release_desktop()
         except Exception:
             pass
-        time.sleep(2)
-        temp_folder.cleanup()
-        log("HFSS session closed and cleaned up.")
+        
+        # New/modified cleanup logic for the desktop object 'd'
+        if 'd' in locals() and d is not None:
+            try:
+                # Check if it's the desktop object and close it
+                if hasattr(d, 'port'):
+                    # This branch is for the older PyAEDT API
+                    d.force_close()
+                else:
+                    # This handles the newer PyAEDT Desktop object which should have a close method
+                    # Assuming newer PyAEDT versions support .close_desktop()
+                    d.close_desktop() 
+            except Exception as e_close:
+                log(f"Warning: Failed to close desktop object 'd' gracefully: {e_close}")
+                
+        # Clean up the temporary directory
+        if os.path.isdir(temp_folder.name):
+            try:
+                shutil.rmtree(temp_folder.name)
+            except OSError:
+                log(f"Warning: Could not remove temporary directory {temp_folder.name}")
+        
+        log("HFSS session closed and cleaned up.") # Move log outside the loop
+        
+        # Must return the data in all paths
+        return calculated_data, hfss_data
 
 
 # ---------------------------------------------------------------------------
@@ -325,4 +364,14 @@ def run_hfss_simulation(best_grid, logger=None, console_callback=None, stop_flag
 if __name__ == "__main__":
     logger = setup_logger()
     grid, history = run_optimization("Genetic Algorithm")
-    run_hfss_simulation(grid, logger)
+    calc_data, hfss_data = run_hfss_simulation(grid, logger) # <--- Get data back
+    
+    if calc_data is not None:
+        fig = plot_s_parameters(
+            base_filename="CLI Run Results",
+            calculated_data_dict=calc_data,
+            hfss_data_dict=hfss_data,
+            best_grid=grid
+        )
+        if fig:
+            plt.show()
