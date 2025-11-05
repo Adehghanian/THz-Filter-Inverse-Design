@@ -59,11 +59,11 @@ def calculate_scattering_parameters(TL, Z1):
     return S11, S21
 
 
-def calculate_S21_dB(Z1_values):
+def calculate_S21_dB(Z1_values, freqs=FREQS):
 
+    
     # Initialize storage arrays
     S21_dB, S11_dB, S21_phase, S11_phase, S21_complex = [], [], [], [], []
-    freqs = FREQS
     # Sweep over all frequencies
     for F in freqs:
         # Propagation constant β = 2πf√ε_eff / c
@@ -103,7 +103,8 @@ def ideal_filter(
     freqs=None,
 ):
 
-
+    import importlib, config
+    importlib.reload(config)
 
     if filter_type is None:
         filter_type = FILTER_TYPE
@@ -116,7 +117,7 @@ def ideal_filter(
     if depth_dB is None:
         depth_dB = FILTER_DEPTH_DB
     if freqs is None:
-        freqs = FREQS
+        freqs = config.FREQS
 
 
 
