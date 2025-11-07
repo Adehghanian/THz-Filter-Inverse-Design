@@ -1,3 +1,13 @@
+"""
+config_gui.py
+---------------------------------------------------------------------------
+Graphical User Interface (GUI) for configuring, launching, and monitoring 
+the THz Inverse Design optimization and HFSS simulation process.
+
+Uses Tkinter for the front end and calls functions from the `main` module
+in separate threads to keep the GUI responsive.
+"""
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 import re
@@ -17,34 +27,48 @@ from thz_filter_model import ideal_filter
 from visualization import visualize_grid, save_s_parameters_to_csv, plot_s_parameters
 from main import run_optimization, run_hfss_simulation
 import pandas as pd
-# --- TEMP FILE PATH FOR INTER-PROCESS DATA TRANSFER ---
+
+# ---------------------------------------------------------------------------
+# GLOBAL CONSTANTS (for inter-process/temporary data handling)
+# ---------------------------------------------------------------------------
+# Note: This is now only defined once here for clarity, even though the original 
+# script had duplicate definitions or references later.
 TEMP_DATA_FILE = os.path.join(tempfile.gettempdir(), "thz_hfss_results_temp.pkl") 
 
 
 # ---------------------------------------------------------------------------
-# Helper: Save updated values to config.py
+# HELPER: CONFIGURATION FILE MANAGEMENT
 # ---------------------------------------------------------------------------
 import importlib
 
 def update_config_file(new_values, console_writer=None):
-# ... (function remains the same) ...
-    """Overwrite config.py constants with updated GUI values and reload the module."""
+    """
+    Overwrite config.py constants with updated GUI values and dynamically 
+    reload the module for immediate use.
+    """
     config_path = os.path.join(os.path.dirname(__file__), "config.py")
 
     with open(config_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     for key, val in new_values.items():
+        # Regex pattern to find the line defining the constant
         pattern = re.compile(rf"^{key}\s*=\s*.*$", re.MULTILINE)
         replacement = f"{key} = {val}\n"
+        found = False
+        
+        # Look for the existing definition to replace it
         for i, line in enumerate(lines):
             if re.match(pattern, line):
                 lines[i] = replacement
+                found = True
                 break
-        else:
-            # key not found: append
+        
+        # If key is not found (shouldn't happen if config.py is clean), append it
+        if not found:
             lines.append(replacement)
 
+    # Write the updated lines back to config.py
     with open(config_path, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
@@ -57,12 +81,13 @@ def update_config_file(new_values, console_writer=None):
         console_writer("Configuration saved and reloaded successfully!\n")
 
 
-
 # ---------------------------------------------------------------------------
-# GUI Setup
+# MAIN GUI INTERFACE SETUP
 # ---------------------------------------------------------------------------
 def launch_config_gui():
-    # --- Root window FIRST (fixes earlier scope issues) ---
+    """Initializes and runs the main Tkinter application."""
+
+    # --- Root Window Setup ---
     root = tk.Tk()
     root.title("THz Inverse Design Configuration & Launcher")
     root.geometry("900x760")
@@ -74,14 +99,17 @@ def launch_config_gui():
     style.configure("TEntry", font=("Segoe UI", 10))
     style.configure("TButton", font=("Segoe UI", 10, "bold"))
 
-    # Notebook for sections
+    # Notebook container for tabs
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # ================= HFSS TAB =================
+    # -------------------------------------------------
+    # 🔹 TAB 1: HFSS SETTINGS
+    # -------------------------------------------------
     hfss_tab = ttk.Frame(notebook)
     notebook.add(hfss_tab, text="HFSS Settings")
 
+    # --- HFSS General Configuration ---
     ttk.Label(hfss_tab, text="HFSS Version:").grid(row=0, column=0, padx=10, pady=10, sticky="w")
     hfss_version = tk.StringVar(value=config.HFSS_VERSION)
     ttk.Entry(hfss_tab, textvariable=hfss_version, width=25).grid(row=0, column=1, sticky="w")
@@ -98,20 +126,19 @@ def launch_config_gui():
     hfss_save_path = tk.StringVar(value=config.HFSS_SAVE_PATH)
 
     def browse_hfss_path():
-        # NOTE: askdirectory returns a path without the file name. The original code
-        # appended the filename. I'll preserve this pattern.
+        """Opens a directory dialog and updates the full save path."""
         path = filedialog.askdirectory(title="Select HFSS Save Directory")
         if path:
-            # Reconstruct the full path including the project name from config
+            # Reconstruct the full path including the project file name
             current_project_name = os.path.basename(hfss_save_path.get()) 
-            if not current_project_name.endswith('.aedt'): # fallback for when a file is not yet defined
+            if not current_project_name.endswith('.aedt'): 
                 current_project_name = config.HFSS_PROJECT_NAME 
             hfss_save_path.set(os.path.join(path, current_project_name))
 
     ttk.Entry(hfss_tab, textvariable=hfss_save_path, width=50).grid(row=3, column=1, sticky="w")
     ttk.Button(hfss_tab, text="Browse", command=browse_hfss_path).grid(row=3, column=2, padx=5, sticky="w")
 
-        # ================= HFSS SETUP PARAMETERS =================
+    # --- HFSS Setup Parameters ---
     ttk.Separator(hfss_tab, orient="horizontal").grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 5))
     ttk.Label(hfss_tab, text="HFSS Setup Parameters", font=("Segoe UI Semibold", 10)).grid(
         row=5, column=0, columnspan=3, padx=10, sticky="w"
@@ -163,8 +190,9 @@ def launch_config_gui():
     )
 
 
-
-    # ================= FILTER TAB =================
+    # -------------------------------------------------
+    # 🔹 TAB 2: FILTER TARGET SETTINGS
+    # -------------------------------------------------
     filter_tab = ttk.Frame(notebook)
     notebook.add(filter_tab, text="Filter Settings")
 
@@ -194,7 +222,7 @@ def launch_config_gui():
     ttk.Entry(filter_tab, textvariable=filter_depth, width=10).grid(row=4, column=1, sticky="w")
 
 
-    # ================ Embedded Ideal Filter Plot =================
+    # --- Embedded Ideal Filter Plot ---
     plot_frame = ttk.Frame(filter_tab)
     plot_frame.grid(row=7, column=0, columnspan=3, pady=(5, 5), sticky="ew")
 
@@ -210,24 +238,24 @@ def launch_config_gui():
     canvas_widget.pack(padx=5, pady=5, fill="both", expand=False)
 
     def preview_ideal_filter():
-        # 🔹 1. Save the current GUI settings first (writes to config.py)
+        """Updates config with current GUI values and plots the resulting ideal filter response."""
+        
+        # 1. Save and reload configuration
         save_config()
 
-        # 🔹 2. Reload the updated config module
+        # 2. Re-import / reload config is crucial here to ensure the latest FREQS is used
         import importlib, config
         importlib.reload(config)
 
-        # 🔹 3. Get current GUI values (from Tkinter variables)
+        # 3. Get current GUI values 
         f_type = filter_type.get()
         cf = filter_cf.get() * 1e12
         bw = filter_bw.get() * 1e12
         tbw = filter_tbw.get() * 1e12
         depth = filter_depth.get()
-
-        # 🔹 4. Recalculate frequency array based on the new HFSS settings
         freqs = config.FREQS
 
-        # 🔹 5. Compute the ideal response
+        # 4. Compute the ideal response
         ideal_S21, ideal_S11, ideal_S21_phase, ideal_S11_phase = ideal_filter(
             filter_type=f_type,
             center_frequency=cf,
@@ -237,7 +265,7 @@ def launch_config_gui():
             freqs=freqs
         )
 
-        # 🔹 6. Plot magnitude and phase responses
+        # 5. Plot magnitude and phase responses
         ax1.clear(); ax2.clear()
         for ax in (ax1, ax2):
             ax.grid(True, linewidth=0.4)
@@ -279,35 +307,13 @@ def launch_config_gui():
     preview_btn.bind("<Leave>", on_leave)
     filter_tab.grid_columnconfigure(2, weight=1)
 
-    # ================= OPTIMIZATION TAB =================
+    # -------------------------------------------------
+    # 🔹 TAB 3: OPTIMIZATION SETTINGS
+    # -------------------------------------------------
     opt_tab = ttk.Frame(notebook)
     notebook.add(opt_tab, text="Optimization Settings")
-    # ================= LOG / RUN TAB =================
-    run_tab = ttk.Frame(notebook)
-    notebook.add(run_tab, text="Run Simulation")
-
-    ttk.Label(run_tab, text="Console Output:").pack(anchor="w", padx=10, pady=5)
-    console_box = scrolledtext.ScrolledText(run_tab, wrap="word", height=20, width=100, state="disabled")
-    console_box.pack(padx=10, pady=5, fill="both", expand=True)
-
-
-
-    # ================= CONVERGENCE TAB =================
-    convergence_tab = ttk.Frame(notebook)
-    notebook.add(convergence_tab, text="Convergence")
-
-    fig_conv = Figure(figsize=(6, 4), dpi=100)
-    ax_conv = fig_conv.add_subplot(111)
-    ax_conv.set_title("GA Convergence")
-    ax_conv.set_xlabel("Generation")
-    ax_conv.set_ylabel("Best Fitness")
-    canvas_conv = FigureCanvasTkAgg(fig_conv, master=convergence_tab)
-    canvas_conv.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
-    fitness_values = []
-
-
-
-    # ---------- Algorithm selector (Row 0-2) ----------
+    
+    # --- Algorithm selector ---
     opt_method_frame = ttk.Frame(opt_tab)
     opt_method_frame.pack(fill="x", padx=10, pady=10)
     
@@ -321,16 +327,15 @@ def launch_config_gui():
     )
     opt_combo.pack(side="left")
 
-
-    # ================== OPTIMIZATION PARAMETERS (Container) ==================
+    # --- Parameter Container ---
     ttk.Separator(opt_tab, orient="horizontal").pack(fill="x", padx=10, pady=5)
     ttk.Label(opt_tab, text="Algorithm Parameters", font=("Segoe UI Semibold", 10)).pack(anchor="w", padx=10)
     
-    # 💥 NEW: Frame to hold the parameters for the currently selected algorithm
+    # Frame to hold the parameters for the currently selected algorithm
     parameters_frame = ttk.Frame(opt_tab)
     parameters_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-    # ---------- Genetic Algorithm parameters FRAME ----------
+    # --- Genetic Algorithm parameters FRAME ---
     ga_frame = ttk.Frame(parameters_frame)
     row = 0
     
@@ -355,7 +360,7 @@ def launch_config_gui():
     ttk.Entry(ga_frame, textvariable=ga_mutation_prob, width=10).grid(row=row-1, column=1, sticky="w")
 
 
-    # ---------- PSO parameters FRAME ----------
+    # --- PSO parameters FRAME ---
     pso_frame = ttk.Frame(parameters_frame)
     row = 0
     
@@ -380,7 +385,7 @@ def launch_config_gui():
     ttk.Entry(pso_frame, textvariable=pso_c2, width=10).grid(row=row-1, column=1, sticky="w")
 
 
-    # ---------- Adjoint Method parameters FRAME ----------
+    # --- Adjoint Method parameters FRAME ---
     adj_frame = ttk.Frame(parameters_frame)
     row = 0
     
@@ -393,8 +398,9 @@ def launch_config_gui():
     ttk.Entry(adj_frame, textvariable=adj_iterations, width=10).grid(row=row-1, column=1, sticky="w")
 
 
-    # ---------- Enable/disable logic (Now showing/hiding frames) ----------
+    # --- Enable/disable logic (Now showing/hiding frames) ---
     def update_opt_fields(*_):
+        """Swaps the parameter frame based on the selected optimization method."""
         method = opt_method.get()
         
         # 1. Unpack (hide) all parameter frames
@@ -415,7 +421,36 @@ def launch_config_gui():
     update_opt_fields() 
 
 
-    # ===== RESULTS TAB =====
+    # -------------------------------------------------
+    # 🔹 TAB 4: CONSOLE / LOG
+    # -------------------------------------------------
+    run_tab = ttk.Frame(notebook)
+    notebook.add(run_tab, text="Run Simulation")
+
+    ttk.Label(run_tab, text="Console Output:").pack(anchor="w", padx=10, pady=5)
+    console_box = scrolledtext.ScrolledText(run_tab, wrap="word", height=20, width=100, state="disabled")
+    console_box.pack(padx=10, pady=5, fill="both", expand=True)
+
+
+    # -------------------------------------------------
+    # 🔹 TAB 5: CONVERGENCE PLOT
+    # -------------------------------------------------
+    convergence_tab = ttk.Frame(notebook)
+    notebook.add(convergence_tab, text="Convergence")
+
+    fig_conv = Figure(figsize=(6, 4), dpi=100)
+    ax_conv = fig_conv.add_subplot(111)
+    ax_conv.set_title("Optimization Convergence")
+    ax_conv.set_xlabel("Generation")
+    ax_conv.set_ylabel("Best Fitness")
+    canvas_conv = FigureCanvasTkAgg(fig_conv, master=convergence_tab)
+    canvas_conv.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
+    fitness_values = []
+
+
+    # -------------------------------------------------
+    # 🔹 TAB 6: RESULTS VISUALIZATION
+    # -------------------------------------------------
     results_tab = ttk.Frame(notebook)
     notebook.add(results_tab, text="Results")
     
@@ -423,11 +458,12 @@ def launch_config_gui():
     results_btn_frame = ttk.Frame(results_tab)
     results_btn_frame.pack(fill="x", padx=10, pady=(5, 0))
     
-    # NEW: Data storage for the currently plotted results (for saving)
+    # Data storage for the currently plotted results (for saving)
     root.plotted_calc_data = None
     root.plotted_hfss_data = None
     
     def save_plotted_data_to_csv():
+        """Handles saving the currently displayed S-parameters to a CSV file."""
         if root.plotted_calc_data is None:
             messagebox.showwarning("No Data", "No results data is currently loaded to save.")
             return
@@ -450,7 +486,7 @@ def launch_config_gui():
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save data: {e}")
 
-    # NEW: Save CSV Button
+    # Save CSV Button
     save_csv_btn = ttk.Button(
         results_btn_frame, 
         text="💾 Save Plotted Data to CSV",
@@ -466,7 +502,7 @@ def launch_config_gui():
     results_plot_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
     def show_results_figure(fig, calc_data=None, hfss_data=None):
-        """Embed a matplotlib figure into the Results tab."""
+        """Embeds a Matplotlib figure into the Results tab."""
         # Clear old figure
         for widget in results_plot_frame.winfo_children():
             widget.destroy()
@@ -484,9 +520,10 @@ def launch_config_gui():
         canvas.draw()
         
     # -------------------------------------------------------------------
-    # Helper functions (now safely in scope)
+    # WORKER/CALLBACK HANDLERS
     # -------------------------------------------------------------------
     def write_to_console(msg):
+        """Thread-safe function to write messages to the GUI console."""
         def _append():
             console_box.configure(state="normal")
             console_box.insert("end", msg)
@@ -496,6 +533,7 @@ def launch_config_gui():
 
 
     def update_convergence_plot(new_fitness):
+        """Thread-safe function to update the convergence plot."""
         fitness_values.append(new_fitness)
         ax_conv.clear()
         ax_conv.plot(fitness_values, linewidth=1.2)
@@ -507,43 +545,42 @@ def launch_config_gui():
 
     # Store optimized grid so HFSS button can use it
     root.best_grid = None
-    root.pre_hfss_calc_data = None # Store pre-HFSS (ABCD) data
+    root.pre_hfss_calc_data = None # Stores pre-HFSS (ABCD) data
 
     def run_selected_optimization():
+        """Starts the optimization thread."""
         selected_method = opt_method.get()
         write_to_console(f"\nRunning {selected_method}...\n")
 
-
-        save_config()  
-        # clear old convergence
+        # 1. Save config and reset plots
+        save_config() 
         fitness_values.clear()
         ax_conv.clear()
-        ax_conv.set_title("GA Convergence")
+        ax_conv.set_title("Optimization Convergence")
         ax_conv.set_xlabel("Generation")
         ax_conv.set_ylabel("Best Fitness")
         canvas_conv.draw()
 
         def update_plot_safe(new_fitness):
-            # Schedule GUI-safe update via root.after()
+            # Schedule GUI-safe update 
             root.after(0, lambda: update_convergence_plot(new_fitness))
         
-
+        # 2. Assemble live filter parameters
         filter_params = {
-        "filter_type": filter_type.get(),
-        "center_frequency": filter_cf.get() * 1e12,
-        "bandwidth": filter_bw.get() * 1e12,
-        "transition_bw": filter_tbw.get() * 1e12,
-        "depth_dB": filter_depth.get(),
+            "filter_type": filter_type.get(),
+            "center_frequency": filter_cf.get() * 1e12,
+            "bandwidth": filter_bw.get() * 1e12,
+            "transition_bw": filter_tbw.get() * 1e12,
+            "depth_dB": filter_depth.get(),
         }
 
-
-
+        # 3. Optimization Worker Thread
         def worker():
             try:
                 best_grid, fitness_history = run_optimization(
                     selected_method=selected_method,
-                    update_callback=update_plot_safe,   # ✅ use the defined function
-                    console_callback=write_to_console,  # ✅ use your GUI console writer
+                    update_callback=update_plot_safe,
+                    console_callback=write_to_console,
                     filter_params=filter_params
                 )
 
@@ -552,19 +589,16 @@ def launch_config_gui():
                 run_hfss_btn.configure(state="normal")
                 write_to_console("\nYou can now run the HFSS simulation.\n")
                 
-
+                # Recalculate ABCD response for the final plot (using latest config/model imports)
                 import importlib, config
                 importlib.reload(config)
-                from thz_filter_model import (
-                    calculate_S_W_values, calculate_Z1, calculate_S21_dB, ideal_filter
-                )
+                from thz_filter_model import calculate_S_W_values, calculate_Z1, calculate_S21_dB, ideal_filter
                 
                 S, W = calculate_S_W_values(best_grid)
                 Z1 = calculate_Z1(S, W)
                 S21_dB_calc, S11_dB_calc, S21_phase_calc, S11_phase_calc, _ = calculate_S21_dB(Z1, config.FREQS)
 
                 freqs = config.FREQS
-
                 ideal_S21, ideal_S11, ideal_S21_phase, ideal_S11_phase = ideal_filter(
                     filter_type=filter_params["filter_type"],
                     center_frequency=filter_params["center_frequency"],
@@ -586,7 +620,7 @@ def launch_config_gui():
 
                 root.pre_hfss_calc_data = calculated_data # Store the data in the root object
                 
-                # No CSV saving here. Plot directly from data dict.
+                # Plot the ABCD result immediately
                 fig_pre = plot_s_parameters(
                     base_filename=f"{selected_method} Result (ABCD Model)", 
                     calculated_data_dict=calculated_data
@@ -597,22 +631,12 @@ def launch_config_gui():
             except Exception as e:
                 write_to_console(f"\nOptimization failed: {e}\n{traceback.format_exc()}\n")
 
-
+        # Start the worker thread
         threading.Thread(target=worker, daemon=True).start()
 
 
-    # --- TEMP FILE PATH FOR INTER-PROCESS DATA TRANSFER ---
-    TEMP_DATA_FILE = os.path.join(tempfile.gettempdir(), "thz_hfss_results_temp.pkl") 
-
-    # ... (Previous code) ...
-
-    # Store optimized grid so HFSS button can use it
-    root.best_grid = None
-    root.pre_hfss_calc_data = None # Store pre-HFSS (ABCD) data
-
-    # ... (run_selected_optimization function) ...
-
     def run_hfss_after_gui():
+        """Starts the HFSS simulation thread."""
         if root.best_grid is None or root.best_grid.size == 0:
             messagebox.showwarning("No optimized grid", "Please run optimization first.")
             return
@@ -621,7 +645,6 @@ def launch_config_gui():
         run_hfss_btn.configure(state="disabled")
 
         best_grid = root.best_grid
-        # pre_hfss_calc_data is not strictly needed here as the thread gets the new calc_data
         
         def hfss_runner():
             calc_data = None
@@ -629,10 +652,11 @@ def launch_config_gui():
             try:
                 write_to_console("⚙️ HFSS simulation started...\n")
 
+                # Note: calc_data here is recalculated *inside* run_hfss_simulation
                 calc_data, hfss_data = run_hfss_simulation(best_grid, console_callback=write_to_console)
                 write_to_console("✅ HFSS simulation completed successfully.\n")
                 
-                # 🚨 CHANGE 2: Pass data to a GUI-safe plotting function instead of pickling/destroying GUI
+                # Pass data to GUI-safe plotting function
                 root.after(0, lambda: load_and_display_hfss_results(calc_data, hfss_data, best_grid))
 
             except Exception as e:
@@ -640,24 +664,23 @@ def launch_config_gui():
                 write_to_console(f"❌ HFSS simulation failed: {e}\n{traceback.format_exc()}\n")
             
             finally:
-                # 🚨 CHANGE 3: Remove the root.after(100, root.destroy) and cleanup flags
                 write_to_console("HFSS runner thread finished.\n")
-                root.after(0, lambda: run_hfss_btn.configure(state="normal")) # Re-enable button after thread finishes
+                # Re-enable button after thread finishes
+                root.after(0, lambda: run_hfss_btn.configure(state="normal")) 
 
-        # 🔹 make it non-daemon, so it survives after GUI close
+        # Start the worker thread (non-daemon to survive GUI close if running long)
         t = threading.Thread(target=hfss_runner)
         t.start()
         
     def load_and_display_hfss_results(calc_data, hfss_data, best_grid):
         """Thread-safe function to display final HFSS results in the GUI."""
         try:
-            notebook.select(results_tab)                    # jump to Results tab
+            notebook.select(results_tab) # jump to Results tab
             write_to_console("\nLoading HFSS results...\n")
 
             if calc_data is not None:
-                # Plot the data
                 calc_df = pd.DataFrame(calc_data)
-                # Print the first few rows for quick inspection
+                write_to_console("\n--- ABCD Model Data Head ---\n")
                 write_to_console(calc_df.head().to_string() + '\n') 
                 
                 if hfss_data:
@@ -672,9 +695,9 @@ def launch_config_gui():
                 )
                 show_results_figure(fig, calc_data=calc_data, hfss_data=hfss_data)
                 
-                # Visualize the grid
+                # Grid visualization logic (kept passive for GUI thread safety)
                 if best_grid is not None:
-                    pass # We will avoid calling plt.show() in the GUI thread directly.
+                    pass 
                     
                 write_to_console("✅ HFSS + ABCD Results loaded and displayed.\n")
             else:
@@ -684,13 +707,14 @@ def launch_config_gui():
             write_to_console(f"❌ Could not load results: {e}\n{traceback.format_exc()}\n")
 
 
-
-
+    # -------------------------------------------------------------------
+    # CONTROL BUTTONS (BOTTOM FRAME)
+    # -------------------------------------------------------------------
     button_frame = ttk.Frame(root)
     button_frame.pack(fill="x", pady=10)
 
     def save_config():
-# ... (function body remains the same) ...
+        """Gathers all current GUI settings and writes them to config.py."""
         new_values = {
             "HFSS_VERSION": f'"{hfss_version.get()}"',
             "HFSS_NON_GRAPHICAL": hfss_headless.get(),
@@ -725,6 +749,7 @@ def launch_config_gui():
             "ADJ_ITERATIONS": f"{adj_iterations.get()}",
         }
         update_config_file(new_values, console_writer=write_to_console)
+        
     ttk.Button(button_frame, text="💾 Save Configuration",
                 command=save_config).pack(side="left", padx=20)
 
@@ -740,5 +765,4 @@ def launch_config_gui():
 
 
 if __name__ == "__main__":
-
-    launch_config_gui()             # reuse same GUI logic (results viewer)
+    launch_config_gui() 
